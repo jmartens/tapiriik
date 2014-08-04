@@ -370,5 +370,5 @@ class StravaService(ServiceBase):
         # second check the short term limit (15m)
         if (usage[0] >= limit[0]):
             # determine local value of the next quarter hour (and add 1m for possible clock skew), which is the 15m limit reset time
-            blackOutUntilLocal = datetime.now() + timedelta(minutes=(15 * ((datetime.now().minute // 15) + 1)) + 1)
+            blackOutUntilLocal = (datetime.now() + timedelta(minutes=(15 * ((datetime.now().minute // 15) + 1)) + 1)).replace(second=0,microsecond=0)
             raise ShortTermRateLimitExceededException()
