@@ -5,7 +5,7 @@ from tapiriik.database import cachedb
 from tapiriik.services.interchange import UploadedActivity, ActivityType, ActivityStatistic, ActivityStatisticUnit, Waypoint, WaypointType, Location, Lap
 from tapiriik.services.api import APIException, UserException, UserExceptionType, APIExcludeActivity
 from tapiriik.services.fit import FITIO
-from tapiriik.services.ratelimiting import RateLimitExceededException
+from tapiriik.services.ratelimiting import ShortTermRateLimitExceededException, LongTermRateLimitExceededException
 
 from django.core.urlresolvers import reverse
 from datetime import datetime, timedelta
@@ -358,5 +358,10 @@ class StravaService(ServiceBase):
         logger.debug("\tCurrent rate limits: %d of %d (15m), %d of %d (24h)" % (usage[0], limit[0], usage[1], limit[1]))
 
         # throw when we are exceeding one or both of the limits        
-        if not((usage[0] < limit[0]) and (usage[1] < limit[1])):
-            raise RateLimitExceededException()
+        # first check the long term limit (24h)
+        if (usage[1] >= limit[1]):
+            raise LongTermRateLimitExceededException()
+
+        # second check the short term limit (15m)
+        if (usage[0] >= limit[0]):
+            raise ShortTermRateLimitExceededException()

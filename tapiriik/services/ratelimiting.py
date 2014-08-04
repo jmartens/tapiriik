@@ -5,6 +5,12 @@ import math
 
 class RateLimitExceededException(Exception):
 	pass
+    
+class LongTermRateLimitExceededException(RateLimitExceededException):
+    pass
+
+class ShortTermRateLimitExceededException(RateLimitExceededException):
+    pass
 
 class RateLimit:
 	def Limit(key):
