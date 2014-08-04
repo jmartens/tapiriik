@@ -5,6 +5,7 @@ from tapiriik.database import cachedb
 from tapiriik.services.interchange import UploadedActivity, ActivityType, ActivityStatistic, ActivityStatisticUnit, Waypoint, WaypointType, Location, Lap
 from tapiriik.services.api import APIException, UserException, UserExceptionType, APIExcludeActivity
 from tapiriik.services.fit import FITIO
+from tapiriik.services.ratelimiting import RateLimitExceededException
 
 from django.core.urlresolvers import reverse
 from datetime import datetime, timedelta
@@ -84,7 +85,7 @@ class StravaService(ServiceBase):
         params = {"grant_type": "authorization_code", "code": code, "client_id": STRAVA_CLIENT_ID, "client_secret": STRAVA_CLIENT_SECRET, "redirect_uri": WEB_ROOT + reverse("oauth_return", kwargs={"service": "strava"})}
 
         self._globalRateLimit()
-        response = requests.post("https://www.strava.com/oauth/token", data=params)
+        response = requests.post("https://www.strava.com/oauth/token", data=params, hooks=dict(response=self.CheckRateLimits))
         self._logAPICall("auth-token", None, response.status_code != 200)
         if response.status_code != 200:
             raise APIException("Invalid code")
@@ -93,7 +94,7 @@ class StravaService(ServiceBase):
         authorizationData = {"OAuthToken": data["access_token"]}
         # Retrieve the user ID, meh.
         self._globalRateLimit()
-        id_resp = requests.get("https://www.strava.com/api/v3/athlete", headers=self._apiHeaders(ServiceRecord({"Authorization": authorizationData})))
+        id_resp = requests.get("https://www.strava.com/api/v3/athlete", headers=self._apiHeaders(ServiceRecord({"Authorization": authorizationData})), hooks=dict(response=self.CheckRateLimits))
         self._logAPICall("auth-extid", None, None)
         return (id_resp.json()["id"], authorizationData)
 
@@ -111,7 +112,7 @@ class StravaService(ServiceBase):
                 break # Caused by activities that "happened" before the epoch. We generally don't care about those activities...
             logger.debug("Req with before=" + str(before) + "/" + str(earliestDate))
             self._globalRateLimit()
-            resp = requests.get("https://www.strava.com/api/v3/athletes/" + str(svcRecord.ExternalID) + "/activities", headers=self._apiHeaders(svcRecord), params={"before": before})
+            resp = requests.get("https://www.strava.com/api/v3/athletes/" + str(svcRecord.ExternalID) + "/activities", headers=self._apiHeaders(svcRecord), params={"before": before}, hooks=dict(response=self.CheckRateLimits))
             self._logAPICall("list", (svcRecord.ExternalID, str(earliestDate)), resp.status_code == 401)
             if resp.status_code == 401:
                 raise APIException("No authorization to retrieve activity list", block=True, user_exception=UserException(UserExceptionType.Authorization, intervention_required=True))
@@ -183,7 +184,7 @@ class StravaService(ServiceBase):
         activityID = activity.ServiceData["ActivityID"]
 
         self._globalRateLimit()
-        streamdata = requests.get("https://www.strava.com/api/v3/activities/" + str(activityID) + "/streams/time,altitude,heartrate,cadence,watts,temp,moving,latlng", headers=self._apiHeaders(svcRecord))
+        streamdata = requests.get("https://www.strava.com/api/v3/activities/" + str(activityID) + "/streams/time,altitude,heartrate,cadence,watts,temp,moving,latlng", headers=self._apiHeaders(svcRecord), hooks=dict(response=self.CheckRateLimits))
         if streamdata.status_code == 401:
             self._logAPICall("download", (svcRecord.ExternalID, str(activity.StartTime)), "auth")
             raise APIException("No authorization to download activity", block=True, user_exception=UserException(UserExceptionType.Authorization, intervention_required=True))
@@ -288,7 +289,7 @@ class StravaService(ServiceBase):
             files = {"file":("tap-sync-" + activity.UID + "-" + str(os.getpid()) + ("-" + source_svc if source_svc else "") + ".fit", fitData)}
 
             self._globalRateLimit()
-            response = requests.post("http://www.strava.com/api/v3/uploads", data=req, files=files, headers=self._apiHeaders(serviceRecord))
+            response = requests.post("http://www.strava.com/api/v3/uploads", data=req, files=files, headers=self._apiHeaders(serviceRecord), hooks=dict(response=self.CheckRateLimits))
             if response.status_code != 201:
                 if response.status_code == 401:
                     raise APIException("No authorization to upload activity " + activity.UID + " response " + response.text + " status " + str(response.status_code), block=True, user_exception=UserException(UserExceptionType.Authorization, intervention_required=True))
@@ -327,7 +328,7 @@ class StravaService(ServiceBase):
                 }
             headers = self._apiHeaders(serviceRecord)
             self._globalRateLimit()
-            response = requests.post("https://www.strava.com/api/v3/activities", data=req, headers=headers)
+            response = requests.post("https://www.strava.com/api/v3/activities", data=req, headers=headers, hooks=dict(response=self.CheckRateLimits))
             # FFR this method returns the same dict as the activity listing, as REST services are wont to do.
             if response.status_code != 201:
                 if response.status_code == 401:
@@ -341,3 +342,21 @@ class StravaService(ServiceBase):
     def DeleteCachedData(self, serviceRecord):
         cachedb.strava_cache.remove({"Owner": serviceRecord.ExternalID})
         cachedb.strava_activity_cache.remove({"Owner": serviceRecord.ExternalID})
+            
+    # Hook: check Strava usage against their limits
+    def CheckRateLimits(self, r, *args, **kwargs):        
+        # retrieve usage/limit headers
+        usage = r.headers['X-RateLimit-Usage'].split(',')
+        limit = r.headers['X-RateLimit-Limit'].split(',')
+        
+        # convert usage and limit data to integer
+        for i in range(0, len(limit)):
+            usage[i] = int(usage[i])
+            limit[i] = int(limit[i])
+            
+        # log current usage/limit values
+        logger.debug("\tCurrent rate limits: %d of %d (15m), %d of %d (24h)" % (usage[0], limit[0], usage[1], limit[1]))
+
+        # throw when we are exceeding one or both of the limits        
+        if not((usage[0] < limit[0]) and (usage[1] < limit[1])):
+            raise RateLimitExceededException()
