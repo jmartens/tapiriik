@@ -361,14 +361,14 @@ class StravaService(ServiceBase):
         # throw when we are exceeding one or both of the limits        
         # first check the long term limit (24h)
         if (usage[1] >= limit[1]):
-            # determine local value of UTC midnight, which is the 24h limit reset time
+            # determine local value of UTC midnight (and add 1m for possible clock skew), which is the 24h limit reset time
             tz = get_localzone()
-            blackOutUntilUTC = (datetime.utcnow() + timedelta(days=1)).replace(hour=0,minute=0,second=0,microsecond=0).replace(tzinfo=pytz.utc)
+            blackOutUntilUTC = (datetime.utcnow() + timedelta(days=1)).replace(hour=0,minute=1,second=0,microsecond=0).replace(tzinfo=pytz.utc)
             blackOutUntilLocal = tz.normalize(blackOutUntilUTC.astimezone(tz))
             raise LongTermRateLimitExceededException()
 
         # second check the short term limit (15m)
         if (usage[0] >= limit[0]):
-            # determine local value of the next quarter hour, which is the 15m limit reset time
-            blackOutUntilLocal = datetime.now() + timedelta(minutes=15 * ((datetime.now().minute // 15) + 1))
+            # determine local value of the next quarter hour (and add 1m for possible clock skew), which is the 15m limit reset time
+            blackOutUntilLocal = datetime.now() + timedelta(minutes=(15 * ((datetime.now().minute // 15) + 1)) + 1)
             raise ShortTermRateLimitExceededException()
